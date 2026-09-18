@@ -34,6 +34,25 @@
       </div>
 
       <div class="table-toolbar">
+        <span class="panel-title">状态流转记录</span>
+      </div>
+      <el-timeline v-if="statusLogs.length" class="status-timeline">
+        <el-timeline-item v-for="log in statusLogs" :key="log.id" placement="top"
+                          :type="timelineType(log.to_status)"
+                          :timestamp="`${formatDateTime(log.created_at)} · ${log.source_label}`">
+          <div class="log-line">
+            <template v-if="log.from_status">
+              <EnumTag group="task_status" :value="log.from_status" :label="log.from_status_label" />
+              <span class="log-arrow">→</span>
+            </template>
+            <EnumTag group="task_status" :value="log.to_status" :label="log.to_status_label" />
+            <span v-if="log.note" class="log-note">{{ log.note }}</span>
+          </div>
+        </el-timeline-item>
+      </el-timeline>
+      <el-empty v-else description="暂无状态流转记录" :image-size="60" />
+
+      <div class="table-toolbar">
         <span class="panel-title">养护记录</span>
         <el-button v-if="detail.green_space" link type="primary"
                    @click="goRecords">去登记养护记录</el-button>
@@ -55,7 +74,7 @@
 
     <template #footer>
       <el-button @click="close">关闭</el-button>
-      <el-button v-if="detail.status !== 'completed' && detail.status !== 'cancelled'" type="primary"
+      <el-button v-if="detail.allowed_status?.includes('completed')" type="primary"
                  @click="complete">标记完成</el-button>
     </template>
   </el-drawer>
@@ -79,6 +98,10 @@ const loading = ref(false)
 const detail = ref({})
 const currentId = ref(null)
 const progress = computed(() => detail.value.progress || {})
+const statusLogs = computed(() => detail.value.status_logs || [])
+
+const TIMELINE_TYPES = { pending: 'info', in_progress: 'primary', completed: 'success', cancelled: 'danger' }
+const timelineType = (status) => TIMELINE_TYPES[status] || 'info'
 
 async function open(id) {
   currentId.value = id
@@ -112,7 +135,7 @@ async function complete() {
     await load()
     emit('updated')
   } catch {
-    // 存在不合格记录时后端会拒绝，提示由请求层统一处理
+    // 前置条件不满足或存在不合格记录时后端会拒绝，提示由请求层统一处理
   }
 }
 
@@ -132,5 +155,25 @@ defineExpose({ open })
 
 .panel-title {
   font-weight: 600;
+}
+
+.status-timeline {
+  padding-left: 4px;
+}
+
+.log-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.log-arrow {
+  color: #909399;
+}
+
+.log-note {
+  color: #909399;
+  font-size: 12px;
 }
 </style>

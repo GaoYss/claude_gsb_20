@@ -24,7 +24,8 @@ class MaintenanceRecordService(BaseService):
     2. 任务存在合格记录且没有不合格记录时，任务自动转为「已完成」；
     3. 存在不合格记录时任务保持「进行中」，等待整改复检；
     4. 删除记录后重新推算任务状态，避免出现「已完成但没有记录」的脏数据；
-    5. 已取消的任务不允许再补录记录。
+    5. 已取消的任务不允许再补录记录；
+    6. 联动引起的状态变化会写入任务状态流转日志，详情中可查变化顺序。
     """
 
     model = MaintenanceRecord
@@ -84,7 +85,11 @@ class MaintenanceRecordService(BaseService):
     # ------------------------------------------------------------ 任务状态联动
     @classmethod
     def sync_task_status(cls, task_id, *, task=None):
-        """按该任务下的全部养护记录重新推算任务状态。"""
+        """按该任务下的全部养护记录重新推算任务状态。
+
+        推算引起的状态变化会写入任务状态流转日志（来源：记录联动），
+        与手动流转一样可在任务详情中查看变化顺序。
+        """
 
         if task is None:
             if not task_id:
@@ -95,6 +100,9 @@ class MaintenanceRecordService(BaseService):
         if task.status == "cancelled":
             return task
 
+        from .maintenance_task_service import MaintenanceTaskService
+
+        previous_status = task.status
         records = (
             db.session.query(MaintenanceRecord)
             .filter(MaintenanceRecord.task_id == task.id)
@@ -103,19 +111,36 @@ class MaintenanceRecordService(BaseService):
         if not records:
             task.status = "pending"
             task.completed_at = None
-            return task
-
-        qualified = [item for item in records if item.quality_result == "qualified"]
-        unqualified = [item for item in records if item.quality_result == "unqualified"]
-
-        if qualified and not unqualified:
-            task.status = "completed"
-            latest = max(item.record_date for item in records)
-            task.completed_at = datetime.combine(latest, time.min)
         else:
-            task.status = "in_progress"
-            task.completed_at = None
+            qualified = [item for item in records if item.quality_result == "qualified"]
+            unqualified = [item for item in records if item.quality_result == "unqualified"]
+
+            if qualified and not unqualified:
+                task.status = "completed"
+                latest = max(item.record_date for item in records)
+                task.completed_at = datetime.combine(latest, time.min)
+            else:
+                task.status = "in_progress"
+                task.completed_at = None
+
+        if task.status != previous_status:
+            note = cls._sync_note(previous_status, task.status)
+            MaintenanceTaskService.log_status_change(
+                task, previous_status, task.status, source="auto", note=note
+            )
         return task
+
+    @staticmethod
+    def _sync_note(previous_status, new_status):
+        """记录联动日志的说明文案。"""
+
+        if new_status == "completed":
+            return "养护记录复检合格，任务自动完成"
+        if new_status == "pending":
+            return "关联养护记录已删除，任务回退为待执行"
+        if previous_status == "completed":
+            return "养护记录变动，任务回退为进行中"
+        return "登记养护记录，任务转为进行中"
 
     @classmethod
     def after_create(cls, instance, payload):

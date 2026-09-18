@@ -2,7 +2,7 @@
 
 from flask import Blueprint, request
 
-from ..schemas import validate_maintenance_task, validate_task_status
+from ..schemas import validate_maintenance_task, validate_maintenance_task_update, validate_task_status
 from ..schemas.filters import task_filters
 from ..services import MaintenanceTaskService
 from ..utils.pagination import paginate, parse_page_args
@@ -36,7 +36,7 @@ def get_task(task_id):
 
 @bp.put("/maintenance-tasks/<int:task_id>")
 def update_task(task_id):
-    payload = validate_maintenance_task(json_body())
+    payload = validate_maintenance_task_update(json_body())
     task = MaintenanceTaskService.update(task_id, payload)
     return ok(task.to_dict(detail=True), message="养护任务已更新")
 

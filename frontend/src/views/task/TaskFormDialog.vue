@@ -37,7 +37,8 @@
         <el-col v-if="isEdit" :span="12">
           <el-form-item label="任务状态" :error="fieldErrors.status">
             <el-select v-model="form.status" style="width: 100%">
-              <el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" />
+              <el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value"
+                         :disabled="item.value !== form.status && !allowedStatus.includes(item.value)" />
             </el-select>
           </el-form-item>
         </el-col>
@@ -79,6 +80,7 @@ const submitting = ref(false)
 const editingId = ref(null)
 const fieldErrors = ref({})
 const spacePreset = ref(null)
+const allowedStatus = ref([])
 const form = reactive(emptyForm())
 
 const isEdit = computed(() => editingId.value !== null)
@@ -108,6 +110,7 @@ function open(row = null) {
   Object.assign(form, emptyForm())
   fieldErrors.value = {}
   spacePreset.value = null
+  allowedStatus.value = row?.allowed_status || []
   editingId.value = row?.id ?? null
   if (row) {
     Object.keys(form).forEach((key) => {

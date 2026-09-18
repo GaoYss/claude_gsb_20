@@ -2,11 +2,17 @@
 
 from sqlalchemy import func, or_
 
-from ..constants import ENUM_GROUPS
+from ..constants import ENUM_GROUPS, TASK_STATUS
 from ..errors import ConflictError, ValidationError
 from ..extensions import db
-from ..models import GreenSpace, MaintenanceRecord, MaintenanceTask, PlantReplacement
-from ..models.maintenance_task import OPEN_STATUSES
+from ..models import (
+    GreenSpace,
+    MaintenanceRecord,
+    MaintenanceTask,
+    MaintenanceTaskStatusLog,
+    PlantReplacement,
+)
+from ..models.maintenance_task import OPEN_STATUSES, TASK_STATUS_TRANSITIONS
 from ..models.mixins import utcnow
 from ..utils.dates import format_date, today
 from ..utils.numbers import to_float
@@ -42,6 +48,54 @@ class MaintenanceTaskService(BaseService):
             raise ValidationError("登记失败", details={"green_space_id": "所选绿地不存在"})
         if space.status == "archived":
             raise ConflictError(f"绿地「{space.name}」已归档，不能再登记养护任务")
+
+    @classmethod
+    def prepare_update(cls, instance, payload):
+        cls.prepare_instance(instance, payload)
+        # 编辑表单允许调整状态，与手动流转走同一套前置条件校验
+        new_status = payload.get("status")
+        if new_status and new_status != instance.status:
+            cls._check_transition(instance, new_status)
+            instance._pending_status_log = (instance.status, new_status)
+
+    @classmethod
+    def after_create(cls, instance, payload):
+        cls.log_status_change(instance, None, instance.status, source="manual", note="任务登记")
+
+    @classmethod
+    def after_update(cls, instance, payload):
+        pending_log = getattr(instance, "_pending_status_log", None)
+        if pending_log:
+            from_status, to_status = pending_log
+            cls.log_status_change(instance, from_status, to_status, source="manual")
+
+    # ------------------------------------------------------------ 状态流转
+    @classmethod
+    def log_status_change(cls, task, from_status, to_status, *, source, note=None):
+        """写入一条状态流转日志（不提交事务，由调用方统一提交）。"""
+
+        db.session.add(MaintenanceTaskStatusLog(
+            task_id=task.id,
+            from_status=from_status,
+            to_status=to_status,
+            source=source,
+            note=note,
+        ))
+
+    @classmethod
+    def _check_transition(cls, task, target):
+        """校验手动状态推进的前置条件，不合法时抛出 409。"""
+
+        if target in TASK_STATUS_TRANSITIONS.get(task.status, ()):
+            return
+        if task.status == "cancelled":
+            raise ConflictError(f"任务 {task.task_no} 已取消，不能再变更状态")
+        if task.status == "pending" and target == "completed":
+            raise ConflictError("任务还未开始执行，不能直接标记完成，请先转为进行中")
+        raise ConflictError(
+            f"任务当前状态为「{TASK_STATUS.label(task.status)}」，"
+            f"不能变更为「{TASK_STATUS.label(target)}」"
+        )
 
     @classmethod
     def apply_derived(cls, instance):
@@ -144,6 +198,7 @@ class MaintenanceTaskService(BaseService):
 
         data = task.to_dict(detail=True)
         data["records"] = [item.to_dict() for item in records]
+        data["status_logs"] = [log.to_dict() for log in task.status_logs]
         data["progress"] = {
             "record_count": len(records),
             "qualified_count": sum(1 for item in records if item.quality_result == "qualified"),
@@ -156,19 +211,25 @@ class MaintenanceTaskService(BaseService):
         }
         return data
 
-    # ------------------------------------------------------------ 状态流转
     @classmethod
     def change_status(cls, obj_id, payload):
         """手动流转任务状态。
 
-        规则：存在不合格养护记录时不允许直接标记完成，需先整改；
-        标记完成会写入完成时间，撤销完成则清空完成时间。
+        规则：
+        1. 状态推进需满足前置条件（待执行 → 进行中 → 已完成/已取消，
+           已取消为终态），未开始的任务不能直接标记完成；
+        2. 存在不合格养护记录时不允许标记完成，需先整改复检；
+        3. 标记完成写入完成时间，撤销完成清空完成时间；
+        4. 每次状态变化都会写入流转日志，可在任务详情中查看。
         """
 
         task = cls.get(obj_id)
         status = payload["status"]
         if payload.get("description") is not None:
             task.description = payload["description"]
+
+        if status != task.status:
+            cls._check_transition(task, status)
 
         if status == "completed":
             unqualified = (
@@ -188,7 +249,9 @@ class MaintenanceTaskService(BaseService):
         else:
             task.completed_at = None
 
-        task.status = status
+        if status != task.status:
+            cls.log_status_change(task, task.status, status, source="manual")
+            task.status = status
         db.session.commit()
         return task
 

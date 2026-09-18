@@ -91,7 +91,7 @@
               <template #dropdown>
                 <el-dropdown-menu>
                   <el-dropdown-item v-for="item in statusOptions" :key="item.value" :command="item.value"
-                                    :disabled="item.value === row.status">
+                                    :disabled="item.value === row.status || !row.allowed_status?.includes(item.value)">
                     {{ item.label }}
                   </el-dropdown-item>
                 </el-dropdown-menu>
