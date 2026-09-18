@@ -13,7 +13,7 @@
 | --- | --- | --- |
 | 养护总览 | `/dashboard` | 绿地与养护总量指标、近半年记录与工时趋势、绿地类型/任务类型/更换原因分布、逾期任务提醒、养护工作量排名 |
 | 绿地台账 | `/green-spaces` | 绿地建档（编号自动生成）、按行政区/类型/等级/状态/关键字检索、档案详情（概览 + 近期任务/记录/更换 + 更换原因汇总）、删除保护 |
-| 养护任务 | `/tasks` | 任务登记（编号按日生成）、按状态/类型/优先级/绿地/计划日期区间/逾期筛选、状态流转（待执行→进行中→已完成/已取消）、任务详情与执行进度 |
+| 养护任务 | `/tasks` | 任务登记（编号按日生成）、按状态/类型/优先级/绿地/计划日期区间/逾期筛选、状态机流转（待执行→进行中→已完成/已取消）、任务详情（执行进度 + 状态流转时间线） |
 | 养护记录 | `/records` | 记录录入（可关联任务，也可登记日常巡查）、工时/天气/材料/质量评定、质量分布与工时汇总、记录详情 |
 | 绿植更换 | `/replacements` | 更换登记（植株、类别、规格、数量、原因、原植株状况、供苗单位、单价与金额）、按类别/原因统计与占比、按绿地/日期区间筛选 |
 
@@ -151,8 +151,8 @@ cd frontend && npm run build && npm run preview
 | PUT | `/green-spaces/{id}` | 更新绿地（编号不可改） |
 | DELETE | `/green-spaces/{id}?force=true` | 删除绿地（有关联数据时需 `force`） |
 | GET/POST | `/maintenance-tasks` | 任务列表 / 登记任务（`status`/`task_type`/`priority`/`green_space_id`/`date_from`/`date_to`/`overdue`） |
-| GET/PUT/DELETE | `/maintenance-tasks/{id}` | 任务详情（含执行进度与记录） / 更新 / 删除（有记录时需 `force`，记录会保留但解除关联） |
-| PATCH | `/maintenance-tasks/{id}/status` | 任务状态流转 |
+| GET/PUT/DELETE | `/maintenance-tasks/{id}` | 任务详情（含执行进度、养护记录与状态流转日志） / 更新（不含状态） / 删除（有记录时需 `force`，记录会保留但解除关联） |
+| PATCH | `/maintenance-tasks/{id}/status` | 任务状态流转（按状态机校验前置条件并留痕） |
 | GET/POST | `/maintenance-records` | 记录列表（`task_id`/`green_space_id`/`quality_result`/`weather`/`unlinked`/日期区间，返回汇总） / 录入记录 |
 | GET/PUT/DELETE | `/maintenance-records/{id}` | 记录详情（含关联更换记录） / 更新 / 删除 |
 | GET | `/maintenance-records/summary` | 记录汇总（条数、工时、质量分布） |
@@ -165,11 +165,12 @@ cd frontend && npm run build && npm run preview
 ## 六、业务规则
 
 1. **业务编号**：绿地 `GS-年份-序号`（如 `GS-2026-0001`），任务 `MT-YYYYMMDD-序号`，养护记录 `MR-YYYYMMDD-序号`，更换记录 `PR-YYYYMMDD-序号`；留空自动生成，唯一约束冲突时自动重试，编号创建后不可修改。
-2. **任务状态联动**（`maintenance_record_service`）：
-   - 任务下有养护记录后，任务自动从「待执行」进入「进行中」；
-   - 存在**合格**记录且**没有不合格**记录时，任务自动置为「已完成」并写入完成时间；
-   - 存在不合格记录时任务保持「进行中」，必须整改复检（把记录改判为合格或删除）后才会完成，手动「标记完成」同样会被拒绝；
-   - 删除养护记录后按剩余记录重新推算任务状态，避免出现「已完成却没有记录」；已取消的任务不允许补录记录。
+2. **任务状态流转**（状态机定义见 `models/maintenance_task` 的 `TASK_STATUS_TRANSITIONS`）：
+   - 状态推进校验前置条件：待执行 → 进行中/已取消；进行中 → 待执行/已完成/已取消；已完成 → 进行中（撤销返工）；**已取消为终态**，不能再流转；
+   - **未开始（待执行）的任务不能直接标记完成**；存在不合格记录时标记完成同样被拒绝，须整改复检合格；
+   - 每次状态变化都写入流转日志（登记任务 / 手动流转 / 记录联动三种来源），任务详情中可按时间顺序查看；
+   - 状态只能经 `PATCH /maintenance-tasks/{id}/status` 流转，`PUT` 更新不接受状态字段；
+   - 记录联动（`maintenance_record_service`）：任务下有养护记录后自动从「待执行」进入「进行中」；存在**合格**记录且**没有不合格**记录时自动置为「已完成」并写入完成时间；存在不合格记录时保持「进行中」，整改复检（改判合格或删除）后才会完成；删除记录后按剩余记录重新推算，避免出现「已完成却没有记录」；**已取消的任务不允许补录记录**。
 3. **绿地归属一致性**：养护记录可只填绿地（日常养护）或只填任务（绿地自动跟随任务）；两者同时提供时必须属于同一绿地。更换记录若关联养护记录，必须是同一绿地的记录。
 4. **日期约束**：养护日期、更换日期不得早于绿地建成日期。
 5. **金额核算**：更换金额 = 数量 × 单价，由后端统一计算；未填单价时金额留空，前端提示补录。
@@ -182,6 +183,7 @@ cd frontend && npm run build && npm run preview
 | --- | --- | --- |
 | `green_space` | 绿地台账 | `code`(唯一)、`name`、`district`、`green_type`、`maintenance_grade`、`area_sqm`、`status`、`manager`、`established_date` |
 | `maintenance_task` | 养护任务 | `task_no`(唯一)、`green_space_id`、`task_type`、`plan_date`、`priority`、`executor`、`status`、`completed_at` |
+| `maintenance_task_status_log` | 任务状态流转日志 | `task_id`、`from_status`、`to_status`、`source`(登记/手动/联动)、`created_at` |
 | `maintenance_record` | 养护记录 | `record_no`(唯一)、`task_id`(可空)、`green_space_id`、`record_date`、`work_content`、`worker`、`work_hours`、`weather`、`quality_result` |
 | `plant_replacement` | 绿植更换记录 | `replacement_no`(唯一)、`green_space_id`、`maintenance_record_id`(可空)、`plant_name`、`plant_category`、`quantity`、`unit`、`reason`、`unit_price`、`amount` |
 
@@ -191,10 +193,10 @@ cd frontend && npm run build && npm run preview
 
 ```bash
 cd backend
-python -m pytest              # 52 个用例：接口、校验、跨模块规则、端到端流程
+python -m pytest              # 58 个用例：接口、校验、跨模块规则、端到端流程
 ```
 
-覆盖重点：绿地编号生成与唯一性、枚举与字段校验、列表过滤/排序/分页、任务状态自动流转与手动流转限制、记录删除后的状态回退、更换金额核算、删除保护与强制删除、统计聚合口径一致性、演示数据自洽性。
+覆盖重点：绿地编号生成与唯一性、枚举与字段校验、列表过滤/排序/分页、任务状态机流转限制（待执行不可直接完成、已取消为终态）、状态流转日志顺序、任务状态自动流转、记录删除后的状态回退、更换金额核算、删除保护与强制删除、统计聚合口径一致性、演示数据自洽性。
 
 ## 九、常见问题
 

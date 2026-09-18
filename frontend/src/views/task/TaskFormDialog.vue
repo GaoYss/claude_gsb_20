@@ -34,20 +34,14 @@
             <el-input v-model="form.executor" placeholder="如：绿化一班" maxlength="64" />
           </el-form-item>
         </el-col>
-        <el-col v-if="isEdit" :span="12">
-          <el-form-item label="任务状态" :error="fieldErrors.status">
-            <el-select v-model="form.status" style="width: 100%">
-              <el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" />
-            </el-select>
-          </el-form-item>
-        </el-col>
       </el-row>
       <el-form-item label="任务说明" :error="fieldErrors.description">
         <el-input v-model="form.description" type="textarea" :rows="3" maxlength="2000"
                   placeholder="作业范围、技术要求、注意事项等" />
       </el-form-item>
       <div class="form-hint">
-        任务编号由系统按日自动生成；任务执行后可在「养护记录」中登记作业明细，任务状态会随之自动流转。
+        任务编号由系统按日自动生成；任务执行后可在「养护记录」中登记作业明细，任务状态会随之自动流转，
+        也可在任务列表中按允许的方向手动流转。
       </div>
     </el-form>
 
@@ -71,7 +65,6 @@ const emit = defineEmits(['saved'])
 
 const { options: typeOptions } = useEnumOptions('task_type')
 const { options: priorityOptions } = useEnumOptions('task_priority')
-const { options: statusOptions } = useEnumOptions('task_status')
 
 const formRef = ref(null)
 const visible = ref(false)
@@ -130,6 +123,8 @@ async function submit() {
   fieldErrors.value = {}
   const payload = { ...form }
   if (!payload.task_no) delete payload.task_no
+  // 状态不随表单提交：登记后只能经状态流转接口变更
+  if (isEdit.value) delete payload.status
   try {
     if (isEdit.value) {
       await maintenanceTaskApi.update(editingId.value, payload)

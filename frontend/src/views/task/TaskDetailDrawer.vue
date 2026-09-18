@@ -51,11 +51,31 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <div class="panel-title">状态流转记录</div>
+      <el-timeline v-if="detail.status_logs?.length" class="status-timeline">
+        <el-timeline-item v-for="log in detail.status_logs" :key="log.id" placement="top"
+                          :timestamp="formatDateTime(log.created_at)">
+          <div class="flow-item">
+            <template v-if="log.from_status">
+              <EnumTag group="task_status" :value="log.from_status" :label="log.from_status_label" />
+              <span class="flow-arrow">→</span>
+              <EnumTag group="task_status" :value="log.to_status" :label="log.to_status_label" />
+            </template>
+            <template v-else>
+              <span>登记任务，初始状态</span>
+              <EnumTag group="task_status" :value="log.to_status" :label="log.to_status_label" />
+            </template>
+            <EnumTag group="task_status_source" :value="log.source" :label="log.source_label" effect="plain" />
+          </div>
+        </el-timeline-item>
+      </el-timeline>
+      <el-empty v-else description="暂无状态流转记录" :image-size="60" />
     </div>
 
     <template #footer>
       <el-button @click="close">关闭</el-button>
-      <el-button v-if="detail.status !== 'completed' && detail.status !== 'cancelled'" type="primary"
+      <el-button v-if="detail.allowed_next_statuses?.includes('completed')" type="primary"
                  @click="complete">标记完成</el-button>
     </template>
   </el-drawer>
@@ -132,5 +152,20 @@ defineExpose({ open })
 
 .panel-title {
   font-weight: 600;
+}
+
+.status-timeline {
+  padding-left: 4px;
+}
+
+.flow-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.flow-arrow {
+  color: #909399;
 }
 </style>

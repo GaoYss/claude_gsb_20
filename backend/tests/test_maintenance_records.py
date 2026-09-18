@@ -154,6 +154,36 @@ def test_update_record_quality_resyncs_task(api, make_task):
     assert api.data(api.get(f"/api/v1/maintenance-tasks/{task.id}"))["status"] == "in_progress"
 
 
+def test_record_sync_writes_status_logs(api, make_task):
+    """记录联动引起的任务状态变化也会按顺序写入流转日志。"""
+
+    task = make_task()
+    record = api.data(api.post("/api/v1/maintenance-records", {
+        "task_id": task.id,
+        "record_date": "2026-03-12",
+        "work_content": "修剪后现场未清理",
+        "quality_result": "unqualified",
+    }), 201)
+
+    # 不合格记录 → 进行中；改判合格 → 已完成；删除记录 → 回退待执行
+    api.put(f"/api/v1/maintenance-records/{record['id']}", {
+        "task_id": task.id,
+        "record_date": "2026-03-12",
+        "work_content": "修剪后现场未清理，当日整改完成",
+        "quality_result": "qualified",
+    })
+    api.delete(f"/api/v1/maintenance-records/{record['id']}")
+
+    logs = api.data(api.get(f"/api/v1/maintenance-tasks/{task.id}"))["status_logs"]
+    assert [(log["from_status"], log["to_status"], log["source"]) for log in logs] == [
+        (None, "pending", "create"),
+        ("pending", "in_progress", "auto"),
+        ("in_progress", "completed", "auto"),
+        ("completed", "pending", "auto"),
+    ]
+    assert all(log["source_label"] == "记录联动" for log in logs[1:])
+
+
 def test_list_filters_and_summary(api, make_task, make_record):
     task = make_task()
     make_record(task=task, work_hours=6, quality_result="qualified")

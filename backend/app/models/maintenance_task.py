@@ -7,6 +7,16 @@ from .mixins import TimestampMixin
 
 OPEN_STATUSES = ("pending", "in_progress")
 
+# 任务状态机：状态推进只能按表中方向流转。
+# 待执行→进行中/已取消；进行中→待执行/已完成/已取消；
+# 已完成→进行中（撤销完成返工）；已取消为终态，不能再流转。
+TASK_STATUS_TRANSITIONS = {
+    "pending": ("in_progress", "cancelled"),
+    "in_progress": ("pending", "completed", "cancelled"),
+    "completed": ("in_progress",),
+    "cancelled": (),
+}
+
 
 class MaintenanceTask(TimestampMixin, db.Model):
     """养护任务登记：一次养护作业的计划与执行状态。"""
@@ -33,12 +43,24 @@ class MaintenanceTask(TimestampMixin, db.Model):
         back_populates="task",
         order_by="MaintenanceRecord.record_date.desc(), MaintenanceRecord.id.desc()",
     )
+    status_logs = db.relationship(
+        "MaintenanceTaskStatusLog",
+        backref="task",
+        cascade="all, delete-orphan",
+        order_by="MaintenanceTaskStatusLog.id",
+    )
 
     @property
     def is_overdue(self):
         """未完成且计划日期早于今天即为逾期。"""
 
         return self.status in OPEN_STATUSES and self.plan_date < today()
+
+    @property
+    def allowed_next_statuses(self):
+        """当前状态按状态机允许流转到的目标状态。"""
+
+        return list(TASK_STATUS_TRANSITIONS.get(self.status, ()))
 
     def to_dict(self, detail=False):
         data = {
@@ -55,6 +77,7 @@ class MaintenanceTask(TimestampMixin, db.Model):
             "executor": self.executor,
             "status": self.status,
             "status_label": TASK_STATUS.label(self.status),
+            "allowed_next_statuses": self.allowed_next_statuses,
             "completed_at": format_datetime(self.completed_at),
             "is_overdue": self.is_overdue,
             "created_at": format_datetime(self.created_at),

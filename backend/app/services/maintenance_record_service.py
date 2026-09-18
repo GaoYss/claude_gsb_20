@@ -13,6 +13,7 @@ from ..utils.numbers import to_float
 from ..utils.sorting import parse_sort
 from .base_service import BaseService
 from .code_generator import daily_prefix
+from .maintenance_task_service import MaintenanceTaskService
 
 
 class MaintenanceRecordService(BaseService):
@@ -84,7 +85,7 @@ class MaintenanceRecordService(BaseService):
     # ------------------------------------------------------------ 任务状态联动
     @classmethod
     def sync_task_status(cls, task_id, *, task=None):
-        """按该任务下的全部养护记录重新推算任务状态。"""
+        """按该任务下的全部养护记录重新推算任务状态，状态变化时写入流转日志。"""
 
         if task is None:
             if not task_id:
@@ -101,20 +102,21 @@ class MaintenanceRecordService(BaseService):
             .all()
         )
         if not records:
-            task.status = "pending"
-            task.completed_at = None
-            return task
-
-        qualified = [item for item in records if item.quality_result == "qualified"]
-        unqualified = [item for item in records if item.quality_result == "unqualified"]
-
-        if qualified and not unqualified:
-            task.status = "completed"
-            latest = max(item.record_date for item in records)
-            task.completed_at = datetime.combine(latest, time.min)
+            next_status, completed_at = "pending", None
         else:
-            task.status = "in_progress"
-            task.completed_at = None
+            qualified = [item for item in records if item.quality_result == "qualified"]
+            unqualified = [item for item in records if item.quality_result == "unqualified"]
+            if qualified and not unqualified:
+                next_status = "completed"
+                latest = max(item.record_date for item in records)
+                completed_at = datetime.combine(latest, time.min)
+            else:
+                next_status, completed_at = "in_progress", None
+
+        if task.status != next_status:
+            MaintenanceTaskService.log_status_change(task, task.status, next_status, source="auto")
+            task.status = next_status
+        task.completed_at = completed_at
         return task
 
     @classmethod

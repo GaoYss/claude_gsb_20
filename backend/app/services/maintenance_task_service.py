@@ -2,11 +2,17 @@
 
 from sqlalchemy import func, or_
 
-from ..constants import ENUM_GROUPS
+from ..constants import ENUM_GROUPS, TASK_STATUS
 from ..errors import ConflictError, ValidationError
 from ..extensions import db
-from ..models import GreenSpace, MaintenanceRecord, MaintenanceTask, PlantReplacement
-from ..models.maintenance_task import OPEN_STATUSES
+from ..models import (
+    GreenSpace,
+    MaintenanceRecord,
+    MaintenanceTask,
+    MaintenanceTaskStatusLog,
+    PlantReplacement,
+)
+from ..models.maintenance_task import OPEN_STATUSES, TASK_STATUS_TRANSITIONS
 from ..models.mixins import utcnow
 from ..utils.dates import format_date, today
 from ..utils.numbers import to_float
@@ -52,6 +58,23 @@ class MaintenanceTaskService(BaseService):
                 instance.completed_at = utcnow()
         else:
             instance.completed_at = None
+
+    # ------------------------------------------------------------ 状态流转留痕
+    @classmethod
+    def log_status_change(cls, task, from_status, to_status, *, source):
+        """写入一条状态流转日志（与触发它的写入在同一事务内提交）。"""
+
+        db.session.add(
+            MaintenanceTaskStatusLog(
+                task_id=task.id, from_status=from_status, to_status=to_status, source=source
+            )
+        )
+
+    @classmethod
+    def after_create(cls, instance, payload):
+        """登记初始状态，作为流转记录的起点。"""
+
+        cls.log_status_change(instance, None, instance.status, source="create")
 
     @classmethod
     def _apply_filters(cls, query, filters):
@@ -144,6 +167,7 @@ class MaintenanceTaskService(BaseService):
 
         data = task.to_dict(detail=True)
         data["records"] = [item.to_dict() for item in records]
+        data["status_logs"] = [log.to_dict() for log in task.status_logs]
         data["progress"] = {
             "record_count": len(records),
             "qualified_count": sum(1 for item in records if item.quality_result == "qualified"),
@@ -161,7 +185,8 @@ class MaintenanceTaskService(BaseService):
     def change_status(cls, obj_id, payload):
         """手动流转任务状态。
 
-        规则：存在不合格养护记录时不允许直接标记完成，需先整改；
+        前置条件：目标状态必须在状态机允许的方向内（已取消为终态）；
+        存在不合格养护记录时不允许标记完成，需先整改复检；
         标记完成会写入完成时间，撤销完成则清空完成时间。
         """
 
@@ -170,27 +195,44 @@ class MaintenanceTaskService(BaseService):
         if payload.get("description") is not None:
             task.description = payload["description"]
 
-        if status == "completed":
-            unqualified = (
-                db.session.query(func.count(MaintenanceRecord.id))
-                .filter(
-                    MaintenanceRecord.task_id == task.id,
-                    MaintenanceRecord.quality_result == "unqualified",
+        if status != task.status:
+            cls._check_transition(task, status)
+            if status == "completed":
+                unqualified = (
+                    db.session.query(func.count(MaintenanceRecord.id))
+                    .filter(
+                        MaintenanceRecord.task_id == task.id,
+                        MaintenanceRecord.quality_result == "unqualified",
+                    )
+                    .scalar()
+                    or 0
                 )
-                .scalar()
-                or 0
-            )
-            if unqualified:
-                raise ConflictError(
-                    f"该任务存在 {unqualified} 条不合格养护记录，请整改复检合格后再标记完成"
-                )
-            task.completed_at = task.completed_at or utcnow()
-        else:
-            task.completed_at = None
+                if unqualified:
+                    raise ConflictError(
+                        f"该任务存在 {unqualified} 条不合格养护记录，请整改复检合格后再标记完成"
+                    )
+                task.completed_at = task.completed_at or utcnow()
+            else:
+                task.completed_at = None
 
-        task.status = status
+            cls.log_status_change(task, task.status, status, source="manual")
+            task.status = status
         db.session.commit()
         return task
+
+    @classmethod
+    def _check_transition(cls, task, status):
+        """校验状态机：未开始的任务不能直接标记完成，已取消的任务为终态。"""
+
+        if task.status == "cancelled":
+            raise ConflictError(f"任务 {task.task_no} 已取消，不能再流转状态")
+        allowed = TASK_STATUS_TRANSITIONS.get(task.status, ())
+        if status not in allowed:
+            allowed_text = "、".join(f"「{TASK_STATUS.label(item)}」" for item in allowed)
+            raise ConflictError(
+                f"任务当前为「{TASK_STATUS.label(task.status)}」，不能直接流转为"
+                f"「{TASK_STATUS.label(status)}」，可流转为：{allowed_text}"
+            )
 
     # ------------------------------------------------------------ 删除
     @classmethod

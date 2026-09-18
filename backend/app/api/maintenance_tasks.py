@@ -36,7 +36,8 @@ def get_task(task_id):
 
 @bp.put("/maintenance-tasks/<int:task_id>")
 def update_task(task_id):
-    payload = validate_maintenance_task(json_body())
+    # 更新不接受 status 字段：状态只能经 /status 按状态机流转
+    payload = validate_maintenance_task(json_body(), for_update=True)
     task = MaintenanceTaskService.update(task_id, payload)
     return ok(task.to_dict(detail=True), message="养护任务已更新")
 

@@ -86,12 +86,14 @@
           <template #default="{ row }">
             <el-button link type="primary" @click="drawer.open(row.id)">详情</el-button>
             <el-button link type="primary" @click="formDialog.open(row)">编辑</el-button>
-            <el-dropdown trigger="click" @command="(status) => changeStatus(row, status)">
-              <el-button link type="primary">状态<el-icon><ArrowDown /></el-icon></el-button>
+            <el-dropdown trigger="click" :disabled="!nextStatusOptions(row).length"
+                         @command="(status) => changeStatus(row, status)">
+              <el-button link type="primary" :disabled="!nextStatusOptions(row).length">
+                状态<el-icon><ArrowDown /></el-icon>
+              </el-button>
               <template #dropdown>
                 <el-dropdown-menu>
-                  <el-dropdown-item v-for="item in statusOptions" :key="item.value" :command="item.value"
-                                    :disabled="item.value === row.status">
+                  <el-dropdown-item v-for="item in nextStatusOptions(row)" :key="item.value" :command="item.value">
                     {{ item.label }}
                   </el-dropdown-item>
                 </el-dropdown-menu>
@@ -162,6 +164,12 @@ function onDateChange(value) {
   filters.date_from = value?.[0] || ''
   filters.date_to = value?.[1] || ''
   search()
+}
+
+/** 状态下拉只提供状态机允许的方向，前置条件不满足的流转由后端拒绝并提示。 */
+function nextStatusOptions(row) {
+  const allowed = row.allowed_next_statuses || []
+  return statusOptions.value.filter((item) => allowed.includes(item.value))
 }
 
 async function changeStatus(row, status) {

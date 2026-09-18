@@ -80,6 +80,12 @@ TASK_STATUS = EnumGroup("task_status", [
     ("cancelled", "已取消"),
 ])
 
+TASK_STATUS_SOURCE = EnumGroup("task_status_source", [
+    ("create", "登记任务"),
+    ("manual", "手动流转"),
+    ("auto", "记录联动"),
+])
+
 # ---------------------------------------------------------------- 养护记录
 QUALITY_RESULT = EnumGroup("quality_result", [
     ("qualified", "合格"),
@@ -138,6 +144,7 @@ ENUM_GROUPS = {
     "task_type": TASK_TYPE,
     "task_priority": TASK_PRIORITY,
     "task_status": TASK_STATUS,
+    "task_status_source": TASK_STATUS_SOURCE,
     "quality_result": QUALITY_RESULT,
     "weather": WEATHER,
     "plant_category": PLANT_CATEGORY,
